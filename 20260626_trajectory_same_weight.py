@@ -22,16 +22,15 @@ spring_k = 5000.0       # N/m, total spring stiffness
 spring_c = 5000.0       # N*s/m, compression damping
 
 # Smart brake targets
-target_extend_high_g = 1.5
-target_extend_low_g = 1.0
+target_load_g_extending = 1.5
 
 # Retraction target cycle:
 # 1.0 g until r reaches 10 m
 # then 0.5 g until r increases to 30 m
 # then 1.0 g again until r reaches 10 m
 target_retract_high_g = 1.0
-target_retract_low_g = 0.7
-retract_low_threshold = 15.0
+target_retract_low_g = 0.5
+retract_low_threshold = 10.0
 retract_high_threshold = 30.0
 
 brake_force_max = 20000.0
@@ -40,7 +39,7 @@ theta0 = 0.0
 rdot0 = 0.0
 thetadot0 = v0 / r0
 
-t_max = 120.0
+t_max = 20.0
 dt = 0.001
 
 
@@ -100,14 +99,13 @@ def load_factor_from_resist_force(y, resist_force):
     return tension / (m * g)
 
 
-def smart_brake_force(y, target_load_g_extending, target_load_g_retracting):
+def smart_brake_force(y, target_load_g_retracting):
     """
     Smart variable brake.
 
     Extension:
         If rdot > 0, cable is extending.
-        Brake tries to increase total cable tension up to the current
-        cyclic extension target: either high g or low g.
+        Brake tries to increase total cable tension up to 1.5 g.
 
     Retraction:
         If rdot < 0, cable is retracting.
@@ -152,11 +150,11 @@ def smart_brake_force(y, target_load_g_extending, target_load_g_retracting):
 # -----------------------------
 # Equations of motion
 # -----------------------------
-def derivatives(y, target_load_g_extending, target_load_g_retracting):
+def derivatives(y, target_load_g_retracting):
     r, rdot, theta, thetadot = y
 
     Fs = spring_force(r, rdot)
-    Fb = smart_brake_force(y, target_load_g_extending, target_load_g_retracting)
+    Fb = smart_brake_force(y, target_load_g_retracting)
 
     total_resist_force = Fs + Fb
 
@@ -170,11 +168,11 @@ def derivatives(y, target_load_g_extending, target_load_g_retracting):
     return np.array([rdot, rddot, thetadot, thetaddot])
 
 
-def rk4_step(y, dt, target_load_g_extending, target_load_g_retracting):
-    k1 = derivatives(y, target_load_g_extending, target_load_g_retracting)
-    k2 = derivatives(y + 0.5 * dt * k1, target_load_g_extending, target_load_g_retracting)
-    k3 = derivatives(y + 0.5 * dt * k2, target_load_g_extending, target_load_g_retracting)
-    k4 = derivatives(y + dt * k3, target_load_g_extending, target_load_g_retracting)
+def rk4_step(y, dt, target_load_g_retracting):
+    k1 = derivatives(y, target_load_g_retracting)
+    k2 = derivatives(y + 0.5 * dt * k1, target_load_g_retracting)
+    k3 = derivatives(y + 0.5 * dt * k2, target_load_g_retracting)
+    k4 = derivatives(y + dt * k3, target_load_g_retracting)
 
     return y + dt * (k1 + 2*k2 + 2*k3 + k4) / 6.0
 
@@ -203,17 +201,7 @@ def update_retraction_mode(r, mode):
     return mode
 
 
-def extend_target_from_mode(mode):
-    if mode == "high":
-        return target_extend_high_g
-
-    if mode == "low":
-        return target_extend_low_g
-
-    raise ValueError(f"Unknown extension mode: {mode}")
-
-
-def retract_target_from_mode(mode):
+def target_from_mode(mode):
     if mode == "high":
         return target_retract_high_g
 
@@ -238,7 +226,6 @@ load_factors = []
 load_factors_no_brake = []
 spring_forces = []
 brake_forces = []
-extension_targets = []
 retraction_targets = []
 retraction_modes = []
 
@@ -255,14 +242,13 @@ while t <= t_max:
 
     # Update cyclic retraction target based on current cable length.
     retraction_mode = update_retraction_mode(r, retraction_mode)
-    target_load_g_extending = extend_target_from_mode(retraction_mode)
-    target_load_g_retracting = retract_target_from_mode(retraction_mode)
+    target_load_g_retracting = target_from_mode(retraction_mode)
 
     x = r * np.sin(theta)
     h = H - r * np.cos(theta)
 
     Fs = spring_force(r, rdot)
-    Fb = smart_brake_force(y, target_load_g_extending, target_load_g_retracting)
+    Fb = smart_brake_force(y, target_load_g_retracting)
 
     load_no_brake = load_factor_from_resist_force(y, Fs)
     load_with_brake = load_factor_from_resist_force(y, Fs + Fb)
@@ -277,7 +263,6 @@ while t <= t_max:
     load_factors_no_brake.append(load_no_brake)
     spring_forces.append(Fs)
     brake_forces.append(Fb)
-    extension_targets.append(target_load_g_extending)
     retraction_targets.append(target_load_g_retracting)
     retraction_modes.append(retraction_mode)
 
@@ -289,7 +274,7 @@ while t <= t_max:
         hit_hard_stop = True
         break
 
-    y = rk4_step(y, dt, target_load_g_extending, target_load_g_retracting)
+    y = rk4_step(y, dt, target_load_g_retracting)
 
     if y[0] <= 0.1:
         print("Simulation stopped: cable length became too small.")
@@ -308,7 +293,6 @@ load_factors = np.array(load_factors)
 load_factors_no_brake = np.array(load_factors_no_brake)
 spring_forces = np.array(spring_forces)
 brake_forces = np.array(brake_forces)
-extension_targets = np.array(extension_targets)
 retraction_targets = np.array(retraction_targets)
 
 
@@ -403,8 +387,13 @@ plt.figure(figsize=(10, 4))
 
 plt.plot(times, load_factors_no_brake, "--", label="Load without smart brake")
 plt.plot(times, load_factors, label="Load with smart brake")
-plt.plot(times, extension_targets, "--", label="Extension target")
 plt.plot(times, retraction_targets, ":", label="Retraction target")
+
+plt.axhline(
+    target_load_g_extending,
+    linestyle="--",
+    label=f"Extension target {target_load_g_extending:.1f} g"
+)
 
 plt.axhline(2.0, linestyle="--", label="2.0 g")
 plt.axhline(3.0, linestyle="--", label="3.0 g")
@@ -461,8 +450,7 @@ print(f"Hard cable limit: {r_max:.2f} m")
 print(f"Spring stiffness k: {spring_k:.1f} N/m")
 print(f"Spring damping c: {spring_c:.1f} N*s/m")
 print()
-print(f"Extension high target: {target_extend_high_g:.2f} g")
-print(f"Extension low target: {target_extend_low_g:.2f} g")
+print(f"Extension target load: {target_load_g_extending:.2f} g")
 print(f"Retraction high target: {target_retract_high_g:.2f} g")
 print(f"Retraction low target: {target_retract_low_g:.2f} g")
 print(f"Switch to low target at r <= {retract_low_threshold:.2f} m")
