@@ -29,7 +29,7 @@ theta0 = 0.0
 rdot0 = 0.0
 thetadot0 = v0 / r0
 
-t_max = 10.0
+t_max = 20.0
 dt = 0.001
 
 
